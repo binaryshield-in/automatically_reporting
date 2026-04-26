@@ -1,11 +1,12 @@
 import { useState, useCallback } from 'react'
+import { generateAIContent } from '../services/api'
 
 const EMPTY_FINDING = {
   id: '', title: '', summary: '', description: '', impact: '', recommendation: '',
   cvss: { score: 0, vector: '', level: 'medium' },
   ease: 'Moderate', cwe: '',
   affected_components: [], payload: [],
-  poc: 'Step 1: Navigate to the affected page\nStep 2: Inject the payload\nStep 3: Observe the successful execution/access',
+  poc: '',
   references: [],
   validated: false, false_positive: false, source: 'manual',
   evidence_images: [],
@@ -17,24 +18,60 @@ function genId() {
   return 'f' + Math.random().toString(36).slice(2, 9)
 }
 
-// ─── Report Metadata Form ────────────────────────────────────────────────────
-function MetaForm({ meta, setMeta, toast }) {
-  const [local, setLocal] = useState({ ...meta })
-  const set = useCallback((k, v) => setLocal(p => ({ ...p, [k]: v })), [])
-  const save = () => { setMeta({ ...local }); toast('Configuration saved ✓') }
-
-  const Field = ({ label, fkey, type = 'text', placeholder = '' }) => (
+// ─── Shared field components (defined outside to prevent remount on render) ───
+function Field({ label, type = 'text', placeholder = '', value, onChange }) {
+  return (
     <div className="form-group">
       <label className="form-label">{label}</label>
       <input
         type={type}
-        value={local[fkey] || ''}
-        onChange={e => set(fkey, e.target.value)}
+        value={value}
+        onChange={onChange}
         className="form-input"
         placeholder={placeholder}
       />
     </div>
   )
+}
+
+function TA({ label, rows = 5, mono = false, placeholder = '', value, onChange, onGenerate, generating }) {
+  return (
+    <div className="form-group">
+      <div className="flex items-center justify-between" style={{ marginBottom: 5 }}>
+        <label className="form-label" style={{ marginBottom: 0 }}>{label}</label>
+        {onGenerate && (
+          <button 
+            type="button" 
+            onClick={onGenerate} 
+            disabled={generating}
+            style={{ 
+              background: 'transparent', border: '1px solid var(--cyan-dim)', borderRadius: 4, padding: '2px 6px',
+              color: 'var(--cyan)', fontSize: 9, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+              fontFamily: "'Exo 2', sans-serif", textTransform: 'uppercase', letterSpacing: 0.5
+            }}
+          >
+            {generating ? <span className="spinner" style={{width: 10, height: 10, borderWidth: 1}}/> : '✨'} 
+            {generating ? 'Thinking...' : 'AI Suggest'}
+          </button>
+        )}
+      </div>
+      <textarea
+        value={value}
+        onChange={onChange}
+        className="form-textarea"
+        rows={rows}
+        placeholder={placeholder}
+        style={mono ? { fontFamily: 'Share Tech Mono, monospace', fontSize: 11 } : {}}
+      />
+    </div>
+  )
+}
+
+// ─── Report Metadata Form ────────────────────────────────────────────────────
+function MetaForm({ meta, setMeta, toast }) {
+  const [local, setLocal] = useState({ ...meta })
+  const set = useCallback((k, v) => setLocal(p => ({ ...p, [k]: v })), [])
+  const save = () => { setMeta({ ...local }); toast('Configuration saved ✓') }
 
   return (
     <div>
@@ -50,9 +87,9 @@ function MetaForm({ meta, setMeta, toast }) {
         <div>
           <div className="card mb-16">
             <div className="section-label">Client Information</div>
-            <Field label="Client Name" fkey="client_name" placeholder="ACME Corporation" />
-            <Field label="Application Name" fkey="application_name" placeholder="Customer Portal" />
-            <Field label="Application Version" fkey="application_version" placeholder="2.1.0" />
+            <Field label="Client Name" value={local.client_name || ''} onChange={e => set('client_name', e.target.value)} placeholder="ACME Corporation" />
+            <Field label="Application Name" value={local.application_name || ''} onChange={e => set('application_name', e.target.value)} placeholder="Customer Portal" />
+            <Field label="Application Version" value={local.application_version || ''} onChange={e => set('application_version', e.target.value)} placeholder="2.1.0" />
             <div className="form-group">
               <label className="form-label">Testing Approach</label>
               <select value={local.application_approach || 'Gray Box'} onChange={e => set('application_approach', e.target.value)} className="form-select">
@@ -87,18 +124,18 @@ function MetaForm({ meta, setMeta, toast }) {
         <div>
           <div className="card mb-16">
             <div className="section-label">Team & Timeline</div>
-            <Field label="Tester Name" fkey="tester_name" placeholder="Your Name" />
-            <Field label="Validator / Reviewer" fkey="validator_name" placeholder="Validator Name" />
-            <Field label="Project ID" fkey="project_id" placeholder={`IARM-${new Date().getFullYear()}-001`} />
-            <Field label="Assessment Start Date" fkey="assessment_startdate" type="date" />
-            <Field label="Assessment End Date"   fkey="assessment_enddate"   type="date" />
-            <Field label="Report Delivery Date"  fkey="report_delivery_date" type="date" />
+            <Field label="Tester Name" value={local.tester_name || ''} onChange={e => set('tester_name', e.target.value)} placeholder="Your Name" />
+            <Field label="Validator / Reviewer" value={local.validator_name || ''} onChange={e => set('validator_name', e.target.value)} placeholder="Validator Name" />
+            <Field label="Project ID" value={local.project_id || ''} onChange={e => set('project_id', e.target.value)} placeholder={`IARM-${new Date().getFullYear()}-001`} />
+            <Field label="Assessment Start Date" type="date" value={local.assessment_startdate || ''} onChange={e => set('assessment_startdate', e.target.value)} />
+            <Field label="Assessment End Date" type="date" value={local.assessment_enddate || ''} onChange={e => set('assessment_enddate', e.target.value)} />
+            <Field label="Report Delivery Date" type="date" value={local.report_delivery_date || ''} onChange={e => set('report_delivery_date', e.target.value)} />
           </div>
           <div className="card">
             <div className="section-label">Document Dates</div>
-            <Field label="Basic Document Date" fkey="basic_document_date" type="date" />
-            <Field label="Draft Document Date"  fkey="draft_document_date"  type="date" />
-            <Field label="Peer Review Date"     fkey="peer_review_date"     type="date" />
+            <Field label="Basic Document Date" type="date" value={local.basic_document_date || ''} onChange={e => set('basic_document_date', e.target.value)} />
+            <Field label="Draft Document Date" type="date" value={local.draft_document_date || ''} onChange={e => set('draft_document_date', e.target.value)} />
+            <Field label="Peer Review Date" type="date" value={local.peer_review_date || ''} onChange={e => set('peer_review_date', e.target.value)} />
           </div>
         </div>
       </div>
@@ -128,19 +165,38 @@ function FindingForm({ initial, onSave, onCancel, toast }) {
     toast(isNew ? 'Finding added ✓' : 'Finding updated ✓')
   }
 
-  const TA = ({ label, fkey, rows = 5, mono = false, placeholder = '' }) => (
-    <div className="form-group">
-      <label className="form-label">{label}</label>
-      <textarea
-        value={f[fkey] || ''}
-        onChange={e => set(fkey, e.target.value)}
-        className="form-textarea"
-        rows={rows}
-        placeholder={placeholder}
-        style={mono ? { fontFamily: 'Share Tech Mono, monospace', fontSize: 11 } : {}}
-      />
-    </div>
-  )
+  const [generatingField, setGeneratingField] = useState(null)
+
+  const askAI = async (field) => {
+    if (!f.title?.trim()) {
+      toast('Please enter a Title first so the AI knows what to generate.', 'warn')
+      return
+    }
+    let apiKey = localStorage.getItem('OPENAI_API_KEY')
+    if (!apiKey) {
+      apiKey = window.prompt('Please enter your OpenAI API Key to use AI suggestions:')
+      if (!apiKey) return
+      localStorage.setItem('OPENAI_API_KEY', apiKey)
+    }
+
+    setGeneratingField(field)
+    try {
+      const result = await generateAIContent(f.title, field, f[field] || '', apiKey)
+      set(field, result.content)
+      toast(`AI generated ${field} ✓`)
+    } catch (err) {
+      if (err?.response?.status === 401) {
+        localStorage.removeItem('OPENAI_API_KEY')
+        toast('Invalid API Key. Please try again.', 'error')
+      } else {
+        toast('AI Generation failed. Check backend logs.', 'error')
+      }
+    } finally {
+      setGeneratingField(null)
+    }
+  }
+
+  // TA is now a top-level component; used with explicit value/onChange below
 
   const sevColor = SEV_COLORS[f.cvss?.level] || '#6e6e6e'
 
@@ -220,7 +276,18 @@ function FindingForm({ initial, onSave, onCancel, toast }) {
             <div className="flex gap-20">
               {[['validated', 'Validated ✓', 'var(--green)'], ['false_positive', 'False Positive ✕', 'var(--red)']].map(([k, l, c]) => (
                 <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12, color: f[k] ? c : 'var(--dim)' }}>
-                  <input type="checkbox" checked={f[k] || false} onChange={e => set(k, e.target.checked)} style={{ accentColor: c, width: 14, height: 14 }} />
+                  <input 
+                    type="checkbox" 
+                    checked={f[k] || false} 
+                    onChange={e => {
+                      const checked = e.target.checked
+                      set(k, checked)
+                      if (checked) {
+                        set(k === 'validated' ? 'false_positive' : 'validated', false)
+                      }
+                    }} 
+                    style={{ accentColor: c, width: 14, height: 14 }} 
+                  />
                   {l}
                 </label>
               ))}
@@ -262,52 +329,16 @@ function FindingForm({ initial, onSave, onCancel, toast }) {
             />
           </div>
 
-          <div className="card">
-            <div className="section-label">Screenshots / Evidence</div>
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              onChange={e => {
-                const files = Array.from(e.target.files)
-                files.forEach(file => {
-                  const reader = new FileReader()
-                  reader.onload = ev => {
-                    setF(p => ({ ...p, evidence_images: [...(p.evidence_images || []), ev.target.result] }))
-                  }
-                  reader.readAsDataURL(file)
-                })
-                e.target.value = '' // reset input
-              }}
-              style={{ fontSize: 11, color: 'var(--dim)', marginBottom: 12 }}
-            />
-            {f.evidence_images?.length > 0 && (
-               <div className="flex gap-8 flex-wrap">
-                 {f.evidence_images.map((img, i) => (
-                   <div key={i} style={{ position: 'relative' }}>
-                     <img src={img} style={{ width: 80, height: 60, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)' }} alt="evidence" />
-                     <button
-                       onClick={() => setF(p => ({ ...p, evidence_images: p.evidence_images.filter((_, idx) => idx !== i) }))}
-                       style={{ position: 'absolute', top: -5, right: -5, background: 'var(--red)', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 10, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                     >✕</button>
-                   </div>
-                 ))}
-               </div>
-            )}
-            <div style={{ fontSize: 10, color: 'var(--dim)', marginTop: 8 }}>
-              Images are embedded directly into the report. Keep them small to avoid massive PDFs.
-            </div>
-          </div>
         </div>
 
         {/* Right column */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div className="card">
             <div className="section-label">Finding Details</div>
-            <TA label="Description * — explain the vulnerability" fkey="description" rows={7} placeholder="Describe the vulnerability, root cause, and affected code/endpoint..." />
-            <TA label="Business Impact — what can an attacker do?" fkey="impact" rows={5} placeholder="Data exfiltration, authentication bypass, RCE..." />
-            <TA label="Proof of Concept — steps to reproduce" fkey="poc" rows={7} mono placeholder="Step 1: Navigate to /endpoint&#10;Step 2: Inject payload: ' OR 1=1--&#10;Step 3: Observe 200 OK response..." />
-            <TA label="Recommendation * — how to fix" fkey="recommendation" rows={6} placeholder="Use parameterized queries. Implement input validation..." />
+            <TA label="Description * — explain the vulnerability" rows={7} placeholder="Describe the vulnerability, root cause, and affected code/endpoint..." value={f.description || ''} onChange={e => set('description', e.target.value)} onGenerate={() => askAI('description')} generating={generatingField === 'description'} />
+            <TA label="Business Impact — what can an attacker do?" rows={5} placeholder="Data exfiltration, authentication bypass, RCE..." value={f.impact || ''} onChange={e => set('impact', e.target.value)} onGenerate={() => askAI('impact')} generating={generatingField === 'impact'} />
+            <TA label="Proof of Concept — steps to reproduce" rows={7} mono placeholder="Step 1: Navigate to /endpoint&#10;Step 2: Inject payload: ' OR 1=1--&#10;Step 3: Observe 200 OK response..." value={f.poc || ''} onChange={e => set('poc', e.target.value)} onGenerate={() => askAI('poc')} generating={generatingField === 'poc'} />
+            <TA label="Recommendation * — how to fix" rows={6} placeholder="Use parameterized queries. Implement input validation..." value={f.recommendation || ''} onChange={e => set('recommendation', e.target.value)} onGenerate={() => askAI('recommendation')} generating={generatingField === 'recommendation'} />
           </div>
         </div>
       </div>

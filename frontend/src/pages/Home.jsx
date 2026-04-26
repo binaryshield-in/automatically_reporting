@@ -3,6 +3,8 @@ import FileUpload        from '../components/FileUpload'
 import DataEditor        from '../components/DataEditor'
 import VulnerabilityTable from '../components/VulnerabilityTable'
 import ReportPreview     from '../components/ReportPreview'
+import AdminPanel        from '../components/AdminPanel'
+import ReportsManager    from '../components/ReportsManager'
 
 export default function Home({
   page, setPage,
@@ -11,6 +13,11 @@ export default function Home({
   editTarget, setEditTarget,
   toast,
   onLoadSample,
+  authUser,
+  onEditReport,
+  currentReportId,
+  currentReportStatus,
+  setCurrentReportStatus,
 }) {
   const handleEdit = (finding) => {
     setEditTarget(finding)
@@ -66,6 +73,25 @@ export default function Home({
           findings={findings}
           meta={meta}
           toast={toast}
+          authUser={authUser}
+          currentReportId={currentReportId}
+          currentReportStatus={currentReportStatus}
+          setCurrentReportStatus={setCurrentReportStatus}
+        />
+      )}
+
+      {page === 'reports' && (
+        <ReportsManager
+          onEditReport={onEditReport}
+          toast={toast}
+          authUser={authUser}
+        />
+      )}
+
+      {page === 'admin' && (
+        <AdminPanel
+          toast={toast}
+          authUser={authUser}
         />
       )}
     </>

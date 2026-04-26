@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react'
-import { importCSV, importJSON, importPDF } from '../services/api'
+import { importCSV, importJSON, importHTML } from '../services/api'
 
 const SEV_ORDER = { critical: 0, high: 1, medium: 2, low: 3, info: 4 }
 
@@ -20,34 +20,50 @@ const FORMAT_DOCS = [
     fields: 'Issue name · Severity · Issue detail · Remediation background · URL · References',
   },
   {
+    label: 'Snyk HTML',
+    color: 'var(--red)',
+    fields: 'Parses Snyk HTML reports to extract vulnerabilities and CVSS scores.',
+  },
+  {
     label: 'Generic JSON',
     color: 'var(--cyan)',
     fields: 'Array or {findings:[]} with: title, severity, description, recommendation, cvss.score',
-  },
-  {
-    label: 'PDF Report',
-    color: 'var(--red)',
-    fields: 'Heuristic extraction — works best on structured reports with numbered findings',
   },
 ]
 
 export default function FileUpload({ onImport, toast }) {
   const [drag, setDrag] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [scanner, setScanner] = useState('nessus')
   const [preview, setPreview] = useState(null)   // { name, count, findings, warnings }
   const fileRef = useRef()
 
   const process = useCallback(async (file) => {
     const ext = file.name.split('.').pop().toLowerCase()
+    
+    // Validate extension based on scanner selection
+    if (scanner === 'nessus' && ext !== 'csv') {
+      toast('Nessus import requires a .csv file', 'error')
+      return
+    }
+    if (scanner === 'snyk' && ext !== 'html') {
+      toast('Snyk import requires an .html file', 'error')
+      return
+    }
+    if (scanner === 'other' && !['csv', 'json'].includes(ext)) {
+      toast('Other import requires .csv or .json file', 'error')
+      return
+    }
+
     setLoading(true)
     setPreview(null)
     try {
       let result
       if (ext === 'csv') result = await importCSV(file)
       else if (ext === 'json') result = await importJSON(file)
-      else if (ext === 'pdf') result = await importPDF(file)
+      else if (ext === 'html') result = await importHTML(file)
       else {
-        toast('Unsupported format — use .csv, .json, or .pdf', 'error')
+        toast('Unsupported format', 'error')
         return
       }
       if (!result.count) {
@@ -81,6 +97,23 @@ export default function FileUpload({ onImport, toast }) {
     <div>
       <div className="page-title">↑ Import Vulnerability Data</div>
 
+      {/* Scanner Selection */}
+      <div className="card mb-20">
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label className="form-label">Select Source Type</label>
+          <select 
+            className="form-select" 
+            value={scanner} 
+            onChange={(e) => setScanner(e.target.value)}
+            style={{ maxWidth: 300 }}
+          >
+            <option value="nessus">Nessus (.csv)</option>
+            <option value="snyk">Snyk (.html)</option>
+            <option value="other">Other Scanner (.csv / .json)</option>
+          </select>
+        </div>
+      </div>
+
       {/* Drop zone */}
       <div
         onDragOver={e => { e.preventDefault(); setDrag(true) }}
@@ -110,14 +143,14 @@ export default function FileUpload({ onImport, toast }) {
               Drop file here or click to browse
             </div>
             <div style={{ fontSize: 11, color: 'var(--dim)' }}>
-              Supports: Nessus CSV · OpenVAS CSV · Burp CSV · JSON · PDF
+              Supports: {scanner === 'nessus' ? 'Nessus CSV' : scanner === 'snyk' ? 'Snyk HTML' : 'Generic CSV · JSON'}
             </div>
           </>
         )}
         <input
           ref={fileRef}
           type="file"
-          accept=".csv,.json,.pdf"
+          accept={scanner === 'nessus' ? '.csv' : scanner === 'snyk' ? '.html' : '.csv,.json'}
           style={{ display: 'none' }}
           onChange={e => e.target.files[0] && process(e.target.files[0])}
         />
@@ -177,18 +210,7 @@ export default function FileUpload({ onImport, toast }) {
         </div>
       )}
 
-      {/* Format reference */}
-      <div className="card">
-        <div className="section-label" style={{ marginBottom: 14 }}>Supported Formats</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          {FORMAT_DOCS.map(f => (
-            <div key={f.label} style={{ borderLeft: `3px solid ${f.color}55`, paddingLeft: 12 }}>
-              <div style={{ color: f.color, fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{f.label}</div>
-              <div style={{ fontSize: 11, color: 'var(--dim)', lineHeight: 1.7 }}>{f.fields}</div>
-            </div>
-          ))}
-        </div>
-      </div>
+
     </div>
   )
 }

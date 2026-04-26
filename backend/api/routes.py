@@ -7,7 +7,7 @@ import json
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from mappers.field_mapper import map_json_findings
@@ -16,17 +16,22 @@ from models.schemas import (
     ParseOptions, ReportPayload, ValidationResult,
 )
 from parsers.csv_parser import parse_csv
-from parsers.pdf_parser import extract_raw_text, parse_pdf
+from parsers.snyk_html_parser import parse_snyk_html
 from services.report_generator import compute_stats, render_report
 from services.validation import validate_findings
 
 log = logging.getLogger(__name__)
+
+# Public routes (no auth required)
+public_router = APIRouter()
+
+# Protected routes (auth enforced in main.py via dependencies=[Depends(require_user)])
 router = APIRouter()
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
 
-@router.get("/health")
+@public_router.get("/health")
 async def health():
     return {"status": "ok", "service": "VAPT Report API", "version": "2.0.0"}
 
@@ -74,29 +79,19 @@ async def import_json(file: UploadFile = File(...)):
     return result
 
 
-@router.post("/import/pdf", response_model=ImportResult)
-async def import_pdf(file: UploadFile = File(...)):
+@router.post("/import/html", response_model=ImportResult)
+async def import_html(file: UploadFile = File(...)):
     """
-    Upload a PDF report for text extraction and heuristic finding parsing.
-    For image-based PDFs, returns raw text only.
+    Upload an HTML report (e.g. Snyk).
+    Extracts structured findings.
     """
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only .pdf files are accepted")
+    if not file.filename or not file.filename.lower().endswith(".html"):
+        raise HTTPException(status_code=400, detail="Only .html files are accepted")
 
     content = await file.read()
-    result = parse_pdf(content, filename=file.filename or "")
-    log.info("PDF import: %d findings parsed", result.count)
+    result = parse_snyk_html(content, filename=file.filename or "")
+    log.info("HTML import: %d findings parsed", result.count)
     return result
-
-
-@router.post("/import/pdf/text")
-async def extract_pdf_text(file: UploadFile = File(...)):
-    """Return raw extracted text from a PDF (for manual review)."""
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only .pdf files are accepted")
-    content = await file.read()
-    text = extract_raw_text(content)
-    return {"text": text, "char_count": len(text)}
 
 
 # ─── Findings Endpoints ────────────────────────────────────────────────────────
@@ -170,6 +165,46 @@ async def preview_html(payload: ReportPayload):
     """Quick preview using default template (no query param needed)."""
     html = render_report(meta=payload.report, findings=payload.findings)
     return HTMLResponse(content=html)
+
+
+@router.post("/export/docx")
+async def export_docx(
+    payload: ReportPayload,
+    template: Optional[str] = Query(default="default_report"),
+):
+    """
+    Export as an MS Word-compatible .doc file.
+    (Returns HTML with MS Word namespaces to preserve full styling and tables).
+    """
+    html = render_report(
+        meta=payload.report,
+        findings=payload.findings,
+        template_name=template or "default_report",
+    )
+    
+    ms_word_html = f"""<html xmlns:o="urn:schemas-microsoft-com:office:office"
+xmlns:w="urn:schemas-microsoft-com:office:word"
+xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8">
+<xml>
+  <w:WordDocument>
+    <w:View>Print</w:View>
+    <w:Zoom>100</w:Zoom>
+    <w:DoNotOptimizeForBrowser/>
+  </w:WordDocument>
+</xml>
+</head>
+<body>
+{html}
+</body>
+</html>"""
+    
+    return Response(
+        content=ms_word_html.encode("utf-8"),
+        media_type="application/msword",
+        headers={"Content-Disposition": "attachment; filename=vapt_report.doc"}
+    )
 
 
 # ─── Sample Data ──────────────────────────────────────────────────────────────

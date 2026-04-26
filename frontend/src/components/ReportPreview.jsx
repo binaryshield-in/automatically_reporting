@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { exportHTML, exportJSON, downloadBlob, todayStr } from '../services/api'
+import { exportHTML, exportDOCX, downloadBlob, todayStr, updateReportStatus } from '../services/api'
 
 function computeStats(findings) {
   const active = findings.filter(f => !f.false_positive)
@@ -16,9 +16,10 @@ function computeStats(findings) {
 const SEV_COLORS = { critical: '#e60000', high: '#ff7a00', medium: '#ffcc00', low: '#6b1c4f', info: '#6e6e6e' }
 const SEV_TEXT   = { critical: '#fff', high: '#fff', medium: '#000', low: '#fff', info: '#fff' }
 
-export default function ReportPreview({ findings, meta, toast }) {
+export default function ReportPreview({ findings, meta, toast, authUser, currentReportId, currentReportStatus, setCurrentReportStatus }) {
   const [loading, setLoading]   = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
+  const [docxLoading, setDocxLoading] = useState(false)
   const [template, setTemplate] = useState('default_report')
   const [previewHtml, setPreviewHtml] = useState(null)
   const printIframeRef = useRef(null)
@@ -92,45 +93,67 @@ export default function ReportPreview({ findings, meta, toast }) {
     }
   }
 
-  const doExportJSON = async () => {
+  const doExportDOCX = async () => {
+    setDocxLoading(true)
+    try {
+      const blob = await exportDOCX(payload, template)
+      const slug = (meta.client_name || 'report').replace(/\s+/g, '_')
+      downloadBlob(blob, `vapt_report_${slug}_${todayStr()}.doc`, 'application/msword')
+      toast('MS Word report downloaded ✓')
+    } catch (err) {
+      toast('DOCX export failed', 'error')
+    } finally {
+      setDocxLoading(false)
+    }
+  }
+
+  const handleRequestApproval = async () => {
+    if (!currentReportId) {
+      toast('Please Save to Cloud first before requesting approval', 'warn')
+      return
+    }
     setLoading(true)
     try {
-      const json = await exportJSON(payload)
-      const slug = (meta.client_name || 'report').replace(/\s+/g, '_')
-      downloadBlob(json, `vapt_${slug}_${todayStr()}.json`, 'application/json')
-      toast('JSON exported ✓')
+      await updateReportStatus(currentReportId, 'pending_approval')
+      setCurrentReportStatus('pending_approval')
+      toast('Report sent for approval ✓')
     } catch (err) {
-      toast('JSON export failed', 'error')
+      toast('Failed to request approval', 'error')
     } finally {
       setLoading(false)
     }
   }
 
-  const doExportCSV = () => {
-    const hdrs = ['id','title','summary','severity','cvss_score','cvss_vector','ease','cwe','validated','false_positive','affected_components','references']
-    const rows = active.map(f => [
-      f.id,
-      `"${(f.title||'').replace(/"/g,'""')}"`,
-      `"${(f.summary||'').replace(/"/g,'""')}"`,
-      f.cvss?.level,
-      f.cvss?.score,
-      f.cvss?.vector,
-      f.ease,
-      f.cwe,
-      f.validated,
-      f.false_positive,
-      `"${(f.affected_components||[]).join('; ')}"`,
-      `"${(f.references||[]).join('; ')}"`,
-    ].join(','))
-    const csv = [hdrs.join(','), ...rows].join('\n')
-    const slug = (meta.client_name || 'findings').replace(/\s+/g, '_')
-    downloadBlob(csv, `findings_${slug}_${todayStr()}.csv`, 'text/csv')
-    toast('CSV exported ✓')
-  }
+  const isUser = authUser?.role !== 'admin'
+  const canRequestApproval = isUser && ['draft', 'needs_change'].includes(currentReportStatus)
 
   return (
     <div>
       <div className="page-title">⊙ Report Preview & Export</div>
+
+      {/* Status banner */}
+      {currentReportId && (
+        <div style={{
+          padding: '12px 16px', background: 'var(--bg2)', border: '1px solid var(--border)',
+          borderRadius: 6, marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+        }}>
+          <div>
+            <span style={{ fontSize: 12, color: 'var(--dim)', marginRight: 10 }}>Cloud Status:</span>
+            <span className={`sev-badge ${
+              currentReportStatus === 'approved' ? 'sev-low' :
+              currentReportStatus === 'needs_change' ? 'sev-high' :
+              currentReportStatus === 'pending_approval' ? 'sev-medium' : ''
+            }`}>
+              {currentReportStatus.replace('_', ' ').toUpperCase()}
+            </span>
+          </div>
+          {canRequestApproval && (
+            <button className="btn btn-sm" style={{ borderColor: 'var(--cyan)', color: 'var(--cyan)' }} onClick={handleRequestApproval} disabled={loading}>
+              ↑ Request to Approval
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Summary cards */}
       <div className="card mb-20">
@@ -244,25 +267,30 @@ export default function ReportPreview({ findings, meta, toast }) {
           </div>
         </div>
 
-        {/* JSON export */}
-        <div className="card" style={{ borderColor: '#9f7aea22' }}>
-          <div style={{ color: 'var(--purple)', fontWeight: 700, fontSize: 13, marginBottom: 8 }}>JSON Export</div>
+        {/* DOCX export */}
+        <div className="card" style={{ borderColor: '#3b82f622' }}>
+          <div style={{ color: '#3b82f6', fontWeight: 700, fontSize: 13, marginBottom: 8 }}>📝 Word Report</div>
           <div style={{ fontSize: 11, color: 'var(--dim)', lineHeight: 1.8, marginBottom: 14 }}>
-            Template-compatible JSON with <code>report</code>, <code>findings</code>, and <code>finding_stats</code> — ready for SysReptor or custom renderers.
+            Generates a standard <strong>.doc</strong> file for MS Word. Preserves styling and tables perfectly. Great for manual editing.
           </div>
-          <button className="btn btn-purple btn-sm" onClick={doExportJSON} disabled={loading}>
-            {loading ? <span className="spinner" /> : '↓'} Download JSON
+          <div className="form-group">
+            <label className="form-label">Template (same as HTML)</label>
+            <select className="form-select" value={template} onChange={e => setTemplate(e.target.value)}>
+              <option value="default_report">Default (IARM Light)</option>
+              <option value="modern_report">Modern (Cyber Dark)</option>
+            </select>
+          </div>
+          <button
+            className="btn btn-sm"
+            style={{ background: '#3b82f6', color: '#fff', fontWeight: 700, border: 'none' }}
+            onClick={doExportDOCX}
+            disabled={docxLoading || loading || pdfLoading}
+          >
+            {docxLoading ? <span className="spinner" /> : '↓'} Download DOC
           </button>
         </div>
 
-        {/* CSV export */}
-        <div className="card" style={{ borderColor: '#39d35322' }}>
-          <div style={{ color: 'var(--green)', fontWeight: 700, fontSize: 13, marginBottom: 8 }}>CSV Export</div>
-          <div style={{ fontSize: 11, color: 'var(--dim)', lineHeight: 1.8, marginBottom: 14 }}>
-            Findings summary as CSV. For dev teams, JIRA imports, or tracking in spreadsheets.
-          </div>
-          <button className="btn btn-success btn-sm" onClick={doExportCSV}>↓ Download CSV</button>
-        </div>
+
       </div>
 
       {/* Hidden iframe for PDF printing */}

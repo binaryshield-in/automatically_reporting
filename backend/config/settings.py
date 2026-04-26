@@ -9,6 +9,11 @@ class Settings(BaseSettings):
     APP_VERSION: str = "2.0.0"
     DEBUG: bool = True
 
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    SECRET_KEY: str = "vapt-secret-key-CHANGE-IN-PRODUCTION-abc123xyz"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRE_MINUTES: int = 480  # 8 hours
+
     CORS_ORIGINS: list = [
         "http://localhost:5173",
         "http://localhost:3000",

@@ -12,6 +12,7 @@ from typing import List
 
 import bleach
 import markdown2
+from markupsafe import Markup
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from config.settings import settings
@@ -47,7 +48,8 @@ def _render_md(text: str) -> str:
         text,
         extras=["fenced-code-blocks", "tables", "strike", "code-friendly"],
     )
-    return bleach.clean(raw, tags=ALLOWED_TAGS, strip=True)
+    cleaned = bleach.clean(raw, tags=ALLOWED_TAGS, strip=True)
+    return Markup(cleaned)
 
 
 def _fmt_date(d: str, long: bool = True) -> str:

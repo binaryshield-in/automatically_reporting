@@ -1,6 +1,8 @@
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Navbar from './components/Navbar'
 import Home   from './pages/Home'
+import LoginPage from './components/LoginPage'
+import { TOKEN_KEY, getMe, saveReportToDB } from './services/api'
 
 const today = () => new Date().toISOString().split('T')[0]
 
@@ -82,14 +84,72 @@ const SAMPLE_FINDINGS = [
   },
 ]
 
+// ─── localStorage helpers ────────────────────────────────────────────────────
+const LS_FINDINGS = 'vapt_findings_v2'
+const LS_META     = 'vapt_meta_v2'
+
+function lsRead(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function lsWrite(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)) } catch { /* quota */ }
+}
+
 let _toastId = 0
 
 export default function App() {
-  const [page, setPage]           = useState('dashboard')
-  const [findings, setFindings]   = useState([])
-  const [meta, setMeta]           = useState({ ...DEFAULT_META })
+  const [page, setPage]             = useState('dashboard')
+  const [findings, setFindings]     = useState(() => lsRead(LS_FINDINGS, []))
+  const [meta, setMeta]             = useState(() => ({ ...DEFAULT_META, ...lsRead(LS_META, {}) }))
   const [editTarget, setEditTarget] = useState(null)
-  const [toasts, setToasts]       = useState([])
+  const [toasts, setToasts]         = useState([])
+  const [savedAt, setSavedAt]       = useState(null)
+  const [currentReportId, setCurrentReportId] = useState(() => lsRead('vapt_current_report_id', null))
+  const [currentReportStatus, setCurrentReportStatus] = useState(() => lsRead('vapt_current_report_status', 'draft'))
+  const [savingCloud, setSavingCloud] = useState(false)
+
+  // ── Auth state ──────────────────────────────────────────────────────────────────
+  // null = checking, null username = not logged in, string = logged in
+  const [authUser, setAuthUser]     = useState(null)
+  const [authChecking, setAuthChecking] = useState(true)
+
+  // Validate stored token on mount
+  useEffect(() => {
+    const token = localStorage.getItem(TOKEN_KEY)
+    if (!token) { setAuthChecking(false); return }
+    getMe()
+      .then(data => setAuthUser(data))
+      .catch(() => {
+        localStorage.removeItem(TOKEN_KEY)
+        setAuthUser(null)
+      })
+      .finally(() => setAuthChecking(false))
+  }, [])
+
+  // Listen for 401 from any API call (interceptor fires this event)
+  useEffect(() => {
+    const handler = () => {
+      setAuthUser(null)
+      toast('Session expired — please sign in again', 'warn')
+    }
+    window.addEventListener('vapt:unauthorized', handler)
+    return () => window.removeEventListener('vapt:unauthorized', handler)
+  }, [])
+
+  // ── Auto-save on every change ──────────────────────────────────────────────
+  useEffect(() => {
+    lsWrite(LS_FINDINGS, findings)
+    lsWrite(LS_META, meta)
+    lsWrite('vapt_current_report_id', currentReportId)
+    lsWrite('vapt_current_report_status', currentReportStatus)
+    setSavedAt(new Date())
+  }, [findings, meta, currentReportId, currentReportStatus])
 
   const toast = useCallback((msg, type = 'ok') => {
     const id = ++_toastId
@@ -111,6 +171,53 @@ export default function App() {
     toast('Sample data loaded ✓')
   }
 
+  const saveToCloud = async () => {
+    if (!meta.client_name) {
+      toast('Client Name is required to save', 'warn')
+      return
+    }
+    setSavingCloud(true)
+    try {
+      const data = await saveReportToDB(currentReportId, meta, findings)
+      setCurrentReportId(data.id)
+      setCurrentReportStatus(data.status || 'draft')
+      toast('Saved to Cloud Database ✓')
+    } catch (err) {
+      toast('Failed to save to cloud', 'error')
+    } finally {
+      setSavingCloud(false)
+    }
+  }
+
+  const loadCloudReport = (id, newMeta, newFindings, status) => {
+    setCurrentReportId(id)
+    setCurrentReportStatus(status || 'draft')
+    setMeta(newMeta)
+    setFindings(newFindings)
+    toast('Report loaded from Cloud ✓')
+    setPage('dashboard')
+  }
+
+  const clearSession = () => {
+    if (!window.confirm('Clear all findings and report config? This cannot be undone.')) return
+    localStorage.removeItem(LS_FINDINGS)
+    localStorage.removeItem(LS_META)
+    localStorage.removeItem('vapt_current_report_id')
+    localStorage.removeItem('vapt_current_report_status')
+    setFindings([])
+    setMeta({ ...DEFAULT_META })
+    setCurrentReportId(null)
+    setCurrentReportStatus('draft')
+    setSavedAt(null)
+    toast('Session cleared', 'warn')
+  }
+
+  const logout = () => {
+    localStorage.removeItem(TOKEN_KEY)
+    setAuthUser(null)
+    toast('Signed out', 'ok')
+  }
+
   const navigateTo = (p) => {
     if (p !== 'editor') setEditTarget(null)
     setPage(p)
@@ -121,37 +228,89 @@ export default function App() {
     return acc
   }, {})
 
+  // ── Auth gate ──────────────────────────────────────────────────────────────────
+  if (authChecking) {
+    return (
+      <div style={{
+        height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'var(--bg)', flexDirection: 'column', gap: 16,
+      }}>
+        <span className="spinner" style={{ width: 28, height: 28 }} />
+        <span style={{ color: 'var(--dim)', fontSize: 12, fontFamily: "'Exo 2', sans-serif" }}>Verifying session...</span>
+      </div>
+    )
+  }
+
+  if (!authUser) {
+    return (
+      <>
+        <LoginPage onLogin={setAuthUser} />
+        {/* Toast container still needed for session-expired messages */}
+        <div className="toast-container">
+          {toasts.map(t => (
+            <div key={t.id} className={`toast ${t.type}`}>{t.msg}</div>
+          ))}
+        </div>
+      </>
+    )
+  }
+
+  // ── Main app ──────────────────────────────────────────────────────────────────
   return (
     <div className="app-shell">
       {/* ── Top bar ── */}
-      <header style={{
-        background: 'var(--bg2)',
-        borderBottom: '1px solid var(--border)',
-        padding: '11px 24px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        flexShrink: 0,
-        zIndex: 10,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <span style={{ color: 'var(--cyan)', fontSize: 18, fontWeight: 700 }}>⬡</span>
-          <span style={{ fontFamily: 'Orbitron, sans-serif', fontWeight: 700, color: 'var(--cyan)', fontSize: 12, letterSpacing: 1.5 }}>
-            VAPT REPORT AUTOMATION
+      <header className="app-header">
+        <div className="header-logo">
+          <span className="header-logo-icon">⬡</span>
+          <span className="header-logo-text">
+            <span style={{ color: 'var(--red)' }}>IARM</span> VAPT REPORTS
           </span>
-          <span style={{ background: 'var(--cyan-dim)', color: 'var(--cyan)', border: '1px solid var(--cyan)', borderRadius: 4, padding: '1px 8px', fontSize: 9, letterSpacing: 2 }}>
-            v2.0
+          <span className="header-logo-version">
+            v1.0
           </span>
         </div>
 
-        <div style={{ display: 'flex', gap: 20, alignItems: 'center', fontSize: 11, color: 'var(--dim)' }}>
-          <span>{findings.length} findings</span>
-          {meta.client_name && <span style={{ color: 'var(--text)' }}>/ {meta.client_name}</span>}
+        <div className="header-controls">
+          <span className="header-stat">{findings.length} findings</span>
+          {meta.client_name && <span className="header-stat-client">/ {meta.client_name}</span>}
           {['critical', 'high'].map(s => SEV_COUNTS[s] > 0 && (
-            <span key={s} style={{ color: s === 'critical' ? 'var(--sev-critical)' : 'var(--sev-high)', fontWeight: 700 }}>
+            <span key={s} className={`header-sev header-sev-${s}`}>
               {SEV_COUNTS[s]} {s}
             </span>
           ))}
+          {savedAt && (
+            <span className="header-save-status">
+              <span className="header-save-dot" />
+              Auto-saved {savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+          {/* Logged-in user */}
+          <span className="header-user">
+            <span className="header-user-icon">⬡</span>
+            <span className="header-user-name">{authUser?.username || 'admin'}</span>
+            <span className="header-user-role">
+              {authUser?.role}
+            </span>
+          </span>
+          <button
+            className="header-btn"
+            style={{ color: 'var(--green)', borderColor: 'var(--green)', minWidth: 90 }}
+            onClick={saveToCloud}
+            disabled={savingCloud}
+            title="Save report to Cloud Database"
+          >
+            {savingCloud ? <span className="spinner" style={{ width: 10, height: 10 }} /> : '☁'} Save
+          </button>
+          <button
+            className="header-btn header-btn-warn"
+            onClick={clearSession}
+            title="Clear all session data"
+          >✕ Clear</button>
+          <button
+            className="header-btn header-btn-danger"
+            onClick={logout}
+            title="Sign out"
+          >→ Logout</button>
         </div>
       </header>
 
@@ -161,6 +320,7 @@ export default function App() {
           setPage={navigateTo}
           findingCount={findings.length}
           meta={meta}
+          authUser={authUser}
         />
 
         <main className="main-content">
@@ -176,6 +336,12 @@ export default function App() {
               setEditTarget={setEditTarget}
               toast={toast}
               onLoadSample={loadSample}
+              onClearSession={clearSession}
+              authUser={authUser}
+              onEditReport={loadCloudReport}
+              currentReportId={currentReportId}
+              currentReportStatus={currentReportStatus}
+              setCurrentReportStatus={setCurrentReportStatus}
             />
           </div>
         </main>
